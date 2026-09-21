@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .models import Evento, Subtarea
-from .serializers import EventoSerializer
+from .serializers import EventoSerializer, SubtareaSerializer
 
 
 @api_view(['GET'])
@@ -57,3 +57,45 @@ def eventos(request):
             serializer.errors,
             status=status.HTTP_400_BAD_REQUEST
         )
+
+
+@api_view(['GET'])
+def obtener_evento(request, evento_id):
+    try:
+        evento = Evento.objects.get(id=evento_id)
+    except Evento.DoesNotExist:
+        return Response(
+            {"error": "El evento no existe"},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = EventoSerializer(evento)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+def crear_subtarea(request, evento_id):
+    try:
+        evento = Evento.objects.get(id=evento_id)
+    except Evento.DoesNotExist:
+        return Response(
+            {"error": "El evento no existe"},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    data = request.data.copy()
+    data['evento'] = evento.id
+
+    serializer = SubtareaSerializer(data=data)
+
+    if serializer.is_valid():
+        subtarea = serializer.save()
+        return Response(
+            SubtareaSerializer(subtarea).data,
+            status=status.HTTP_201_CREATED
+        )
+
+    return Response(
+        serializer.errors,
+        status=status.HTTP_400_BAD_REQUEST
+    )
