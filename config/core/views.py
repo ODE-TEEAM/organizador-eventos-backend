@@ -83,13 +83,10 @@ def crear_subtarea(request, evento_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    data = request.data.copy()
-    data['evento'] = evento.id
-
-    serializer = SubtareaSerializer(data=data)
+    serializer = SubtareaSerializer(data=request.data)
 
     if serializer.is_valid():
-        subtarea = serializer.save()
+        subtarea = serializer.save(evento=evento)
         return Response(
             SubtareaSerializer(subtarea).data,
             status=status.HTTP_201_CREATED
