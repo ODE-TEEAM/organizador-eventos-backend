@@ -140,6 +140,10 @@ class HoyResponseSerializer(serializers.Serializer):
     """Respuesta agrupada de GET /api/hoy/."""
     fecha_referencia = serializers.DateField(help_text='Fecha usada como "hoy" para clasificar.')
     resumen = ResumenHoySerializer()
+    gestiones = GestionHoySerializer(
+        many=True,
+        help_text='Lista plana de gestiones activas, ya ordenada por fecha y menor esfuerzo. Es la que consume el frontend.'
+    )
     vencidas = GestionHoySerializer(many=True)
     para_hoy = GestionHoySerializer(many=True)
     proximas = GestionHoySerializer(many=True)

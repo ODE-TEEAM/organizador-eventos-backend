@@ -311,10 +311,12 @@ def hoy(request):
 
     vencidas, para_hoy, proximas = [], [], []
     grupos = {'vencidas': vencidas, 'para_hoy': para_hoy, 'proximas': proximas}
+    # Lista plana (ya ordenada) que consume el frontend en /hoy.
+    gestiones = []
 
     for subtarea in queryset:
         grupo = _grupo_por_plazo(subtarea.plazo, hoy_fecha)
-        grupos[grupo].append({
+        item = {
             'id': subtarea.id,
             'titulo': subtarea.nombre,
             'evento': subtarea.evento.nombre,
@@ -324,7 +326,9 @@ def hoy(request):
             'fecha': subtarea.plazo,
             'horas_estimadas': subtarea.horas_estimadas,
             'grupo': grupo,
-        })
+        }
+        grupos[grupo].append(item)
+        gestiones.append(item)
 
     return Response({
         'fecha_referencia': hoy_fecha,
@@ -335,6 +339,7 @@ def hoy(request):
             'proximas': len(proximas),
             'completadas': completadas,
         },
+        'gestiones': gestiones,
         'vencidas': vencidas,
         'para_hoy': para_hoy,
         'proximas': proximas,
