@@ -1,5 +1,42 @@
+from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import Evento, Subtarea
+
+
+class RegistroSerializer(serializers.Serializer):
+    """Crea un organizador a partir de email + password (usado por POST /api/register/)."""
+    email = serializers.EmailField(
+        required=True,
+        error_messages={
+            'required': 'El correo es obligatorio.',
+            'blank': 'El correo no puede estar vacío.',
+            'invalid': 'Escribe un correo válido.',
+        },
+    )
+    password = serializers.CharField(
+        required=True,
+        write_only=True,
+        min_length=6,
+        error_messages={
+            'required': 'La contraseña es obligatoria.',
+            'min_length': 'La contraseña debe tener al menos 6 caracteres.',
+        },
+    )
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError('Ya existe una cuenta con este correo.')
+        return value
+
+    def create(self, validated_data):
+        email = validated_data['email']
+        # username = email: el inicio de sesión es por correo, no por username.
+        return User.objects.create_user(
+            username=email,
+            email=email,
+            password=validated_data['password'],
+        )
 
 
 class SubtareaSerializer(serializers.ModelSerializer):

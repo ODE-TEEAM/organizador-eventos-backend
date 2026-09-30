@@ -19,6 +19,7 @@ from .serializers import (
     SubtareaSerializer,
     HoyQuerySerializer,
     HoyResponseSerializer,
+    RegistroSerializer,
 )
 
 ESTADO_COMPLETADA = 'completada'
@@ -108,6 +109,62 @@ def login(request):
             'nombre': nombre,
         },
     })
+
+
+@extend_schema(
+    summary='Crear cuenta de organizador (registro)',
+    description=(
+        'Recibe `email` y `password` (mínimo 6 caracteres) y crea la cuenta del '
+        'organizador. Devuelve `201` con los datos del usuario y su token. Si el '
+        'correo ya existe o los datos son inválidos, responde `400` con los errores '
+        'por campo (ej. `{"email": ["..."]}`).'
+    ),
+    request=RegistroSerializer,
+    examples=[
+        OpenApiExample(
+            'Request',
+            value={'email': 'nuevo@hestia.com', 'password': 'clave123'},
+            request_only=True,
+        ),
+        OpenApiExample(
+            'Cuenta creada',
+            value={
+                'id': 3, 'email': 'nuevo@hestia.com', 'nombre': 'nuevo@hestia.com',
+                'token': '7c2a...',
+            },
+            response_only=True,
+            status_codes=['201'],
+        ),
+        OpenApiExample(
+            'Correo duplicado',
+            value={'email': ['Ya existe una cuenta con este correo.']},
+            response_only=True,
+            status_codes=['400'],
+        ),
+    ],
+    responses={201: dict, 400: dict},
+)
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def register(request):
+    serializer = RegistroSerializer(data=request.data)
+
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    user = serializer.save()
+    token, _ = Token.objects.get_or_create(user=user)
+
+    return Response(
+        {
+            'id': user.id,
+            'email': user.email,
+            'nombre': user.get_full_name() or user.username,
+            'token': token.key,
+        },
+        status=status.HTTP_201_CREATED
+    )
 
 
 @api_view(['GET', 'POST'])
