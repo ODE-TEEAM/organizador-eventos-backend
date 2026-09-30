@@ -91,3 +91,54 @@ class EventoSerializer(serializers.ModelSerializer):
                 }
             },
         }
+
+
+# ===== Serializers de la vista /hoy (C5) =====
+# Estos serializers describen el contrato request/response del endpoint /api/hoy/
+# para que drf-spectacular genere el schema en /api/docs/ (Swagger).
+
+class HoyQuerySerializer(serializers.Serializer):
+    """Parámetros de consulta (query params) aceptados por GET /api/hoy/."""
+    evento = serializers.IntegerField(
+        required=False,
+        help_text='Filtra las gestiones por el id del evento (ej. ?evento=3).'
+    )
+    estado = serializers.CharField(
+        required=False,
+        help_text=(
+            'Filtra las gestiones por estado: pendiente, en_progreso o completada '
+            '(ej. ?estado=pendiente). Sin este filtro solo se listan gestiones activas '
+            '(se excluyen las completadas).'
+        )
+    )
+
+
+class GestionHoySerializer(serializers.Serializer):
+    """Una gestión (subtarea) ya clasificada dentro de un grupo de prioridad."""
+    id = serializers.IntegerField()
+    titulo = serializers.CharField()
+    evento = serializers.CharField(help_text='Nombre del evento al que pertenece.')
+    evento_id = serializers.IntegerField()
+    estado = serializers.CharField(help_text='pendiente | en_progreso | completada')
+    prioridad = serializers.CharField(help_text='alta | media | baja')
+    fecha = serializers.DateField(help_text='Plazo de la gestión (YYYY-MM-DD).')
+    horas_estimadas = serializers.DecimalField(max_digits=5, decimal_places=2)
+    grupo = serializers.CharField(help_text='vencidas | para_hoy | proximas')
+
+
+class ResumenHoySerializer(serializers.Serializer):
+    """Contadores usados por las tarjetas resumen de la vista /hoy."""
+    total = serializers.IntegerField(help_text='Gestiones activas devueltas (vencidas + para_hoy + proximas).')
+    vencidas = serializers.IntegerField()
+    para_hoy = serializers.IntegerField()
+    proximas = serializers.IntegerField()
+    completadas = serializers.IntegerField(help_text='Gestiones completadas dentro del alcance del filtro.')
+
+
+class HoyResponseSerializer(serializers.Serializer):
+    """Respuesta agrupada de GET /api/hoy/."""
+    fecha_referencia = serializers.DateField(help_text='Fecha usada como "hoy" para clasificar.')
+    resumen = ResumenHoySerializer()
+    vencidas = GestionHoySerializer(many=True)
+    para_hoy = GestionHoySerializer(many=True)
+    proximas = GestionHoySerializer(many=True)
