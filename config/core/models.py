@@ -1,7 +1,15 @@
+from django.conf import settings
 from django.db import models
 
 
 class Evento(models.Model):
+    organizador = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='eventos',
+        null=True,
+        blank=True,
+    )
     nombre = models.CharField(max_length=200)
     tipo = models.CharField(max_length=50)
     cliente = models.CharField(max_length=200)

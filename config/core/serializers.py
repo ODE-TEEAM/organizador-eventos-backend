@@ -48,6 +48,7 @@ class EventoSerializer(serializers.ModelSerializer):
         model = Evento
         fields = '__all__'
         extra_kwargs = {
+            'organizador': {'read_only': True},
             'nombre': {
                 'required': True,
                 'error_messages': {

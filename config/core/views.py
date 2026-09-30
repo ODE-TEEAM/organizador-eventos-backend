@@ -1,8 +1,15 @@
 from datetime import timedelta
 
+from django.contrib.auth.models import User
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
-from rest_framework.decorators import api_view
+from rest_framework.authtoken.models import Token
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -19,7 +26,13 @@ ESTADO_COMPLETADA = 'completada'
 VENTANA_MEDIA_DIAS = 3
 
 
+@extend_schema(
+    summary='Health check público',
+    responses={200: dict},
+)
 @api_view(['GET'])
+@authentication_classes([])
+@permission_classes([AllowAny])
 def health_check(request):
     return Response({
         "status": "ok",
@@ -27,10 +40,80 @@ def health_check(request):
     })
 
 
+@extend_schema(
+    summary='Iniciar sesión (devuelve token + datos del usuario)',
+    description=(
+        'Recibe `email` y `password`. Si las credenciales son correctas devuelve el '
+        'token (en `token`, `access` y `access_token`) y los datos del usuario. '
+        'Si son incorrectas responde `401`.'
+    ),
+    request=dict,
+    examples=[
+        OpenApiExample(
+            'Request',
+            value={'email': 'ana@hestia.com', 'password': 'clave123'},
+            request_only=True,
+        ),
+        OpenApiExample(
+            'Respuesta exitosa',
+            value={
+                'token': '9f1c...', 'access': '9f1c...', 'access_token': '9f1c...',
+                'email': 'ana@hestia.com', 'nombre': 'Ana Pérez',
+                'user': {'id': 1, 'email': 'ana@hestia.com', 'nombre': 'Ana Pérez'},
+            },
+            response_only=True,
+        ),
+        OpenApiExample(
+            'Credenciales incorrectas',
+            value={'detail': 'Credenciales incorrectas.'},
+            response_only=True,
+            status_codes=['401'],
+        ),
+    ],
+    responses={200: dict, 401: dict},
+)
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def login(request):
+    email = (request.data.get('email') or '').strip()
+    password = request.data.get('password') or ''
+
+    if not email or not password:
+        return Response(
+            {'detail': 'Email y password son obligatorios.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    user = User.objects.filter(email__iexact=email).first()
+
+    if user is None or not user.is_active or not user.check_password(password):
+        return Response(
+            {'detail': 'Credenciales incorrectas.'},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
+    token, _ = Token.objects.get_or_create(user=user)
+    nombre = user.get_full_name() or user.username
+
+    return Response({
+        'token': token.key,
+        'access': token.key,
+        'access_token': token.key,
+        'email': user.email,
+        'nombre': nombre,
+        'user': {
+            'id': user.id,
+            'email': user.email,
+            'nombre': nombre,
+        },
+    })
+
+
 @api_view(['GET', 'POST'])
 def eventos(request):
     if request.method == 'GET':
-        eventos = Evento.objects.all()
+        eventos = Evento.objects.filter(organizador=request.user)
         serializer = EventoSerializer(eventos, many=True)
         return Response(serializer.data)
 
@@ -38,7 +121,7 @@ def eventos(request):
         serializer = EventoSerializer(data=request.data)
 
         if serializer.is_valid():
-            evento = serializer.save()
+            evento = serializer.save(organizador=request.user)
 
             Subtarea.objects.create(
                 evento=evento,
@@ -75,7 +158,7 @@ def eventos(request):
 @api_view(['GET'])
 def obtener_evento(request, evento_id):
     try:
-        evento = Evento.objects.get(id=evento_id)
+        evento = Evento.objects.get(id=evento_id, organizador=request.user)
     except Evento.DoesNotExist:
         return Response(
             {"error": "El evento no existe"},
@@ -89,7 +172,7 @@ def obtener_evento(request, evento_id):
 @api_view(['POST'])
 def crear_subtarea(request, evento_id):
     try:
-        evento = Evento.objects.get(id=evento_id)
+        evento = Evento.objects.get(id=evento_id, organizador=request.user)
     except Evento.DoesNotExist:
         return Response(
             {"error": "El evento no existe"},
@@ -198,7 +281,9 @@ def _prioridad_por_plazo(plazo, hoy):
 def hoy(request):
     hoy_fecha = timezone.localdate()
 
-    queryset = Subtarea.objects.select_related('evento').all()
+    queryset = Subtarea.objects.select_related('evento').filter(
+        evento__organizador=request.user
+    )
 
     evento_param = request.query_params.get('evento')
     if evento_param:
