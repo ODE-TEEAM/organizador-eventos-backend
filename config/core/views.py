@@ -167,6 +167,65 @@ def register(request):
     )
 
 
+@extend_schema(
+    summary='Leer o actualizar el perfil del organizador autenticado',
+    description=(
+        'GET devuelve `id`, `email` y `nombre` del usuario autenticado. '
+        'PATCH acepta `nombre` (mínimo 3 caracteres) y/o `password_actual` + '
+        '`password_nueva` (mínimo 6 caracteres) para cambiar la contraseña. '
+        'El token de sesión sigue siendo válido después del cambio.'
+    ),
+    request=dict,
+    responses={200: dict, 400: dict},
+)
+@api_view(['GET', 'PATCH'])
+def perfil(request):
+    user = request.user
+
+    if request.method == 'GET':
+        return Response({
+            'id': user.id,
+            'email': user.email,
+            'nombre': user.get_full_name() or user.username,
+        })
+
+    data = request.data
+
+    if 'nombre' in data:
+        nombre = (data.get('nombre') or '').strip()
+        if len(nombre) < 3:
+            return Response(
+                {'nombre': ['El nombre debe tener al menos 3 caracteres.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        user.first_name = nombre[:150]
+        user.save(update_fields=['first_name'])
+
+    if 'password_actual' in data or 'password_nueva' in data:
+        password_actual = data.get('password_actual') or ''
+        password_nueva = data.get('password_nueva') or ''
+
+        if not user.check_password(password_actual):
+            return Response(
+                {'password_actual': ['La contraseña actual no es correcta.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if len(password_nueva) < 6:
+            return Response(
+                {'password_nueva': ['La nueva contraseña debe tener al menos 6 caracteres.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(password_nueva)
+        user.save(update_fields=['password'])
+
+    return Response({
+        'id': user.id,
+        'email': user.email,
+        'nombre': user.get_full_name() or user.username,
+    })
+
+
 @api_view(['GET', 'POST'])
 def eventos(request):
     if request.method == 'GET':
