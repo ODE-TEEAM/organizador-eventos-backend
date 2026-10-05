@@ -114,22 +114,23 @@ def login(request):
 @extend_schema(
     summary='Crear cuenta de organizador (registro)',
     description=(
-        'Recibe `email` y `password` (mínimo 6 caracteres) y crea la cuenta del '
-        'organizador. Devuelve `201` con los datos del usuario y su token. Si el '
-        'correo ya existe o los datos son inválidos, responde `400` con los errores '
-        'por campo (ej. `{"email": ["..."]}`).'
+        'Recibe `nombre`, `email` y `password` (mínimo 6 caracteres) y crea la cuenta '
+        'del organizador. El `nombre` se guarda como nombre visible (saludo y header). '
+        'Devuelve `201` con los datos del usuario y su token. Si el correo ya existe o '
+        'los datos son inválidos, responde `400` con los errores por campo '
+        '(ej. `{"email": ["..."]}`).'
     ),
     request=RegistroSerializer,
     examples=[
         OpenApiExample(
             'Request',
-            value={'email': 'nuevo@hestia.com', 'password': 'clave123'},
+            value={'nombre': 'Mauricio', 'email': 'nuevo@hestia.com', 'password': 'clave123'},
             request_only=True,
         ),
         OpenApiExample(
             'Cuenta creada',
             value={
-                'id': 3, 'email': 'nuevo@hestia.com', 'nombre': 'nuevo@hestia.com',
+                'id': 3, 'email': 'nuevo@hestia.com', 'nombre': 'Mauricio',
                 'token': '7c2a...',
             },
             response_only=True,
@@ -137,7 +138,7 @@ def login(request):
         ),
         OpenApiExample(
             'Correo duplicado',
-            value={'email': ['Ya existe una cuenta con este correo.']},
+            value={'email': ['Ese correo ya tiene una cuenta. Prueba iniciando sesión o usa otro correo.']},
             response_only=True,
             status_codes=['400'],
         ),
@@ -271,7 +272,7 @@ def eventos(request):
         )
 
 
-@api_view(['GET'])
+@api_view(['GET', 'PUT', 'PATCH'])
 def obtener_evento(request, evento_id):
     try:
         evento = Evento.objects.get(id=evento_id, organizador=request.user)
@@ -281,8 +282,22 @@ def obtener_evento(request, evento_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    serializer = EventoSerializer(evento)
-    return Response(serializer.data)
+    if request.method == 'GET':
+        serializer = EventoSerializer(evento)
+        return Response(serializer.data)
+
+    # PUT/PATCH: edición del evento. `partial=True` permite enviar solo los
+    # campos que cambiaron; el serializer valida y devuelve errores por campo.
+    serializer = EventoSerializer(evento, data=request.data, partial=True)
+
+    if serializer.is_valid():
+        serializer.save()
+        return Response(EventoSerializer(evento).data)
+
+    return Response(
+        serializer.errors,
+        status=status.HTTP_400_BAD_REQUEST
+    )
 
 
 @api_view(['POST'])

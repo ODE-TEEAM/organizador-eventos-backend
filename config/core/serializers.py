@@ -4,7 +4,19 @@ from .models import Evento, Subtarea
 
 
 class RegistroSerializer(serializers.Serializer):
-    """Crea un organizador a partir de email + password (usado por POST /api/register/)."""
+    """Crea un organizador a partir de nombre + email + password (usado por POST /api/register/)."""
+    nombre = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        min_length=3,
+        max_length=150,
+        error_messages={
+            'required': 'Cuéntanos tu nombre para personalizar tu cuenta.',
+            'blank': 'El nombre no puede quedar vacío.',
+            'min_length': 'Tu nombre debe tener al menos 3 caracteres.',
+            'max_length': 'Tu nombre es muy largo (máximo 150 caracteres).',
+        },
+    )
     email = serializers.EmailField(
         required=True,
         error_messages={
@@ -23,18 +35,30 @@ class RegistroSerializer(serializers.Serializer):
         },
     )
 
+    def validate_nombre(self, value):
+        value = (value or '').strip()
+        if len(value) < 3:
+            raise serializers.ValidationError(
+                'Tu nombre debe tener al menos 3 caracteres.'
+            )
+        return value
+
     def validate_email(self, value):
         value = value.strip().lower()
         if User.objects.filter(email__iexact=value).exists():
-            raise serializers.ValidationError('Ya existe una cuenta con este correo.')
+            raise serializers.ValidationError(
+                'Ese correo ya tiene una cuenta. Prueba iniciando sesión o usa otro correo.'
+            )
         return value
 
     def create(self, validated_data):
         email = validated_data['email']
         # username = email: el inicio de sesión es por correo, no por username.
+        # first_name = nombre: es el nombre que mostramos en el saludo y el header.
         return User.objects.create_user(
             username=email,
             email=email,
+            first_name=validated_data['nombre'][:150],
             password=validated_data['password'],
         )
 
