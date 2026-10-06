@@ -325,6 +325,68 @@ def crear_subtarea(request, evento_id):
     )
 
 
+@extend_schema(
+    summary='Reprogramar o editar una gestión (subtarea)',
+    description=(
+        'Permite actualizar campos de una gestión del organizador autenticado. '
+        'Para el C1 del Sprint 3 el campo principal es `plazo` (reprogramar fecha). '
+        'También acepta `nombre`, `horas_estimadas` y `estado` de forma parcial.\n\n'
+        'Solo se puede editar una subtarea de un evento propio. '
+        'Tras cambiar el plazo, `GET /api/hoy/` refleja el nuevo grupo '
+        '(vencidas / para_hoy / proximas).'
+    ),
+    request=SubtareaSerializer,
+    examples=[
+        OpenApiExample(
+            'Reprogramar plazo',
+            value={'plazo': '2026-10-12'},
+            request_only=True,
+        ),
+        OpenApiExample(
+            'Respuesta',
+            value={
+                'id': 15,
+                'nombre': 'Confirmar catering',
+                'plazo': '2026-10-12',
+                'horas_estimadas': '2.00',
+                'estado': 'pendiente',
+            },
+            response_only=True,
+        ),
+    ],
+    responses={200: SubtareaSerializer, 400: dict, 404: dict},
+)
+@api_view(['GET', 'PUT', 'PATCH'])
+def actualizar_subtarea(request, subtarea_id):
+    try:
+        subtarea = Subtarea.objects.select_related('evento').get(
+            id=subtarea_id,
+            evento__organizador=request.user,
+        )
+    except Subtarea.DoesNotExist:
+        return Response(
+            {'error': 'La gestión no existe o no te pertenece.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if request.method == 'GET':
+        return Response(SubtareaSerializer(subtarea).data)
+
+    serializer = SubtareaSerializer(
+        subtarea,
+        data=request.data,
+        partial=True,
+    )
+
+    if serializer.is_valid():
+        serializer.save()
+        return Response(SubtareaSerializer(subtarea).data)
+
+    return Response(
+        serializer.errors,
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
 def _grupo_por_plazo(plazo, hoy):
     """Clasifica una gestión en vencidas / para_hoy / proximas según su plazo."""
     if plazo < hoy:
