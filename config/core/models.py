@@ -21,8 +21,6 @@ class Evento(models.Model):
         return self.nombre
 
 
-
-
 class Subtarea(models.Model):
     evento = models.ForeignKey(
         Evento,
@@ -36,3 +34,19 @@ class Subtarea(models.Model):
 
     def __str__(self):
         return self.nombre
+
+
+class PerfilOrganizador(models.Model):
+    """
+    C2 Sprint 3: límite diario de horas de gestión por organizador.
+    Default 6h. Rango permitido: 1 a 16.
+    """
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='perfil_organizador',
+    )
+    limite_horas_diarias = models.PositiveSmallIntegerField(default=6)
+
+    def __str__(self):
+        return f'Perfil de {self.user_id} ({self.limite_horas_diarias}h/día)'

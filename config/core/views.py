@@ -13,7 +13,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import Evento, Subtarea
+from .models import Evento, Subtarea, PerfilOrganizador
 from .serializers import (
     EventoSerializer,
     SubtareaSerializer,
@@ -179,15 +179,36 @@ def register(request):
     request=dict,
     responses={200: dict, 400: dict},
 )
+def _obtener_o_crear_perfil(user):
+    """Devuelve el perfil del organizador; si no existe, lo crea con límite 6h."""
+    perfil, _ = PerfilOrganizador.objects.get_or_create(
+        user=user,
+        defaults={'limite_horas_diarias': 6},
+    )
+    return perfil
+
+
+@extend_schema(
+    summary='Leer o actualizar el perfil del organizador autenticado',
+    description=(
+        'GET devuelve `id`, `email`, `nombre` y `limite_horas_diarias` (default 6). '
+        'PATCH acepta `nombre`, `limite_horas_diarias` (1–16) y/o cambio de contraseña '
+        '(`password_actual` + `password_nueva`).'
+    ),
+    request=dict,
+    responses={200: dict, 400: dict},
+)
 @api_view(['GET', 'PATCH'])
 def perfil(request):
     user = request.user
+    perfil_org = _obtener_o_crear_perfil(user)
 
     if request.method == 'GET':
         return Response({
             'id': user.id,
             'email': user.email,
             'nombre': user.get_full_name() or user.username,
+            'limite_horas_diarias': perfil_org.limite_horas_diarias,
         })
 
     data = request.data
@@ -201,6 +222,22 @@ def perfil(request):
             )
         user.first_name = nombre[:150]
         user.save(update_fields=['first_name'])
+
+    if 'limite_horas_diarias' in data:
+        try:
+            limite = int(data.get('limite_horas_diarias'))
+        except (TypeError, ValueError):
+            return Response(
+                {'limite_horas_diarias': ['Debe ser un número entero entre 1 y 16.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if limite < 1 or limite > 16:
+            return Response(
+                {'limite_horas_diarias': ['El límite diario debe estar entre 1 y 16 horas.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        perfil_org.limite_horas_diarias = limite
+        perfil_org.save(update_fields=['limite_horas_diarias'])
 
     if 'password_actual' in data or 'password_nueva' in data:
         password_actual = data.get('password_actual') or ''
@@ -220,12 +257,14 @@ def perfil(request):
         user.set_password(password_nueva)
         user.save(update_fields=['password'])
 
+    perfil_org.refresh_from_db()
+
     return Response({
         'id': user.id,
         'email': user.email,
         'nombre': user.get_full_name() or user.username,
+        'limite_horas_diarias': perfil_org.limite_horas_diarias,
     })
-
 
 @api_view(['GET', 'POST'])
 def eventos(request):
