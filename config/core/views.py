@@ -446,8 +446,8 @@ def actualizar_subtarea(request, subtarea_id):
     nueva_fecha = serializer.validated_data.get('plazo')
 
     if nueva_fecha and nueva_fecha != subtarea.plazo:
-        configuracion, _ = ConfiguracionOrganizador.objects.get_or_create(
-            organizador=request.user,
+        configuracion, _ = PerfilOrganizador.objects.get_or_create(
+            user=request.user,
             defaults={'limite_horas_diarias': 6},
         )
 
@@ -666,8 +666,8 @@ def hoy(request):
 
 @api_view(['GET', 'PUT'])
 def configuracion_limite_horas(request):
-    configuracion, _ = ConfiguracionOrganizador.objects.get_or_create(
-        organizador=request.user,
+    configuracion, _ = PerfilOrganizador.objects.get_or_create(
+        user=request.user,
         defaults={'limite_horas_diarias': 6},
     )
 

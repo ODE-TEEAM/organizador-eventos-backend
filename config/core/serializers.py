@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
-from .models import Evento, Subtarea, ConfiguracionOrganizador
+from .models import Evento, Subtarea, PerfilOrganizador
 
 
 class RegistroSerializer(serializers.Serializer):
@@ -211,7 +211,7 @@ class HoyResponseSerializer(serializers.Serializer):
 
 class ConfiguracionLimiteHorasSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ConfiguracionOrganizador
+        model = PerfilOrganizador
         fields = ['limite_horas_diarias']
 
     def validate_limite_horas_diarias(self, value):
