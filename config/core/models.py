@@ -29,7 +29,7 @@ class Subtarea(models.Model):
     )
     nombre = models.CharField(max_length=200)
     plazo = models.DateField()
-    horas_estimadas = models.DecimalField(max_digits=5, decimal_places=2)
+    horas_estimadas = models.PositiveSmallIntegerField()
     estado = models.CharField(max_length=20, default='pendiente')
 
     def __str__(self):

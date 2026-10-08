@@ -1,6 +1,13 @@
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework import serializers
 from .models import Evento, Subtarea, PerfilOrganizador
+
+# Tope de año para fechas (evita valores absurdos como el año 10000).
+ANIO_MAXIMO = 2100
+# Rango permitido de horas estimadas por gestión.
+HORAS_MINIMAS = 1
+HORAS_MAXIMAS = 12
 
 
 class RegistroSerializer(serializers.Serializer):
@@ -86,7 +93,7 @@ class SubtareaSerializer(serializers.ModelSerializer):
                 'required': True,
                 'error_messages': {
                     'required': 'Las horas estimadas son obligatorias.',
-                    'invalid': 'Las horas estimadas deben ser un número válido.'
+                    'invalid': 'Las horas estimadas deben ser un número entero.'
                 }
             },
             'evento': {
@@ -95,9 +102,28 @@ class SubtareaSerializer(serializers.ModelSerializer):
         }
 
     def validate_horas_estimadas(self, value):
-        if value is None or value <= 0:
+        if value < HORAS_MINIMAS or value > HORAS_MAXIMAS:
             raise serializers.ValidationError(
-                'Las horas estimadas deben ser mayores a 0.'
+                f'Las horas estimadas deben ser un número entero entre {HORAS_MINIMAS} y {HORAS_MAXIMAS}.'
+            )
+        return value
+
+    def validate_plazo(self, value):
+        if value.year > ANIO_MAXIMO:
+            raise serializers.ValidationError(
+                f'El año del plazo no puede ser mayor a {ANIO_MAXIMO}.'
+            )
+        # Solo exigimos fecha futura al crear o al mover el plazo (reprogramar);
+        # así no bloqueamos ediciones de nombre/horas de gestiones ya vencidas.
+        plazo_cambia = self.instance is None or 'plazo' in self.initial_data
+        if plazo_cambia and value < timezone.now().date():
+            raise serializers.ValidationError(
+                'El plazo de la gestión no puede ser una fecha pasada.'
+            )
+        evento = self.context.get('evento')
+        if evento and evento.fecha_hora and value > evento.fecha_hora.date():
+            raise serializers.ValidationError(
+                'El plazo de la gestión no puede ser posterior a la fecha del evento.'
             )
         return value
 
@@ -154,6 +180,40 @@ class EventoSerializer(serializers.ModelSerializer):
             },
         }
 
+    def validate_fecha_hora(self, value):
+        if value.year > ANIO_MAXIMO:
+            raise serializers.ValidationError(
+                f'El año del evento no puede ser mayor a {ANIO_MAXIMO}.'
+            )
+        # Al crear, la fecha/hora debe ser estrictamente futura (no vale la misma
+        # hora pasada del día). Al editar se permite cualquier valor para no
+        # bloquear correcciones de eventos ya guardados.
+        if self.instance is None and value <= timezone.now():
+            raise serializers.ValidationError(
+                'La fecha y hora del evento deben ser futuras.'
+            )
+        return value
+
+    def validate_plazo_limite(self, value):
+        if value.year > ANIO_MAXIMO:
+            raise serializers.ValidationError(
+                f'El año del plazo límite no puede ser mayor a {ANIO_MAXIMO}.'
+            )
+        if self.instance is None and value < timezone.now().date():
+            raise serializers.ValidationError(
+                'El plazo límite no puede ser una fecha pasada.'
+            )
+        return value
+
+    def validate(self, attrs):
+        fecha = attrs.get('fecha_hora', getattr(self.instance, 'fecha_hora', None))
+        plazo = attrs.get('plazo_limite', getattr(self.instance, 'plazo_limite', None))
+        if fecha and plazo and plazo > fecha.date():
+            raise serializers.ValidationError({
+                'plazo_limite': 'El plazo límite no puede ser posterior a la fecha del evento.'
+            })
+        return attrs
+
 
 # ===== Serializers de la vista /hoy (C5) =====
 # Estos serializers describen el contrato request/response del endpoint /api/hoy/
@@ -184,7 +244,7 @@ class GestionHoySerializer(serializers.Serializer):
     estado = serializers.CharField(help_text='pendiente | en_progreso | completada')
     prioridad = serializers.CharField(help_text='alta | media | baja')
     fecha = serializers.DateField(help_text='Plazo de la gestión (YYYY-MM-DD).')
-    horas_estimadas = serializers.DecimalField(max_digits=5, decimal_places=2)
+    horas_estimadas = serializers.IntegerField()
     grupo = serializers.CharField(help_text='vencidas | para_hoy | proximas')
 
 

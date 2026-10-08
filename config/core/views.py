@@ -351,12 +351,15 @@ def crear_subtarea(request, evento_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    serializer = SubtareaSerializer(data=request.data)
+    serializer = SubtareaSerializer(
+        data=request.data,
+        context={'evento': evento},
+    )
 
     if serializer.is_valid():
         subtarea = serializer.save(evento=evento)
         return Response(
-            SubtareaSerializer(subtarea).data,
+            SubtareaSerializer(subtarea, context={'evento': evento}).data,
             status=status.HTTP_201_CREATED
         )
 
@@ -389,7 +392,7 @@ def crear_subtarea(request, evento_id):
                 'id': 15,
                 'nombre': 'Confirmar catering',
                 'plazo': '2026-10-31',
-                'horas_estimadas': '2.00',
+                'horas_estimadas': 2,
                 'estado': 'pendiente',
             },
             response_only=True,
@@ -434,6 +437,7 @@ def actualizar_subtarea(request, subtarea_id):
         subtarea,
         data=request.data,
         partial=True,
+        context={'evento': subtarea.evento},
     )
 
     if not serializer.is_valid():
@@ -464,9 +468,16 @@ def actualizar_subtarea(request, subtarea_id):
         limite_horas = configuracion.limite_horas_diarias
 
         if horas_planificadas > limite_horas:
+            # La fecha sugerida nunca supera la fecha del evento: una gestión
+            # programada después del evento no tendría sentido.
+            fecha_tope = subtarea.evento.fecha_hora.date()
             fecha_sugerida = nueva_fecha + timedelta(days=1)
 
             for _ in range(30):
+                if fecha_sugerida > fecha_tope:
+                    fecha_sugerida = None
+                    break
+
                 horas_fecha_sugerida = Subtarea.objects.filter(
                     evento__organizador=request.user,
                     plazo=fecha_sugerida,
