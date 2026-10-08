@@ -9,6 +9,7 @@ from .views import (
     obtener_evento,
     crear_subtarea,
     actualizar_subtarea,
+    configuracion_limite_horas,
 )
 
 urlpatterns = [
@@ -22,4 +23,5 @@ urlpatterns = [
     path('eventos/<int:evento_id>/subtareas/', crear_subtarea, name='crear_subtarea'),
     # C1 Sprint 3: reprogramar / editar una gestión
     path('subtareas/<int:subtarea_id>/', actualizar_subtarea, name='actualizar_subtarea'),
+    path('configuracion/limite-horas/', configuracion_limite_horas,name='configuracion_limite_horas'),
 ]

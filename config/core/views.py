@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import User
+from django.db import models
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 from rest_framework.authtoken.models import Token
@@ -20,6 +21,7 @@ from .serializers import (
     HoyQuerySerializer,
     HoyResponseSerializer,
     RegistroSerializer,
+    ConfiguracionLimiteHorasSerializer,
 )
 
 ESTADO_COMPLETADA = 'completada'
@@ -370,15 +372,15 @@ def crear_subtarea(request, evento_id):
         'Permite actualizar campos de una gestión del organizador autenticado. '
         'Para el C1 del Sprint 3 el campo principal es `plazo` (reprogramar fecha). '
         'También acepta `nombre`, `horas_estimadas` y `estado` de forma parcial.\n\n'
-        'Solo se puede editar una subtarea de un evento propio. '
-        'Tras cambiar el plazo, `GET /api/hoy/` refleja el nuevo grupo '
-        '(vencidas / para_hoy / proximas).'
+        'Al reprogramar una gestión, se verifica el límite diario de horas del '
+        'organizador. Si la nueva fecha supera el límite configurado, se devuelve '
+        'un conflicto con las horas planificadas y el límite, sin guardar el cambio.'
     ),
     request=SubtareaSerializer,
     examples=[
         OpenApiExample(
             'Reprogramar plazo',
-            value={'plazo': '2026-10-12'},
+            value={'plazo': '2026-10-31'},
             request_only=True,
         ),
         OpenApiExample(
@@ -386,14 +388,31 @@ def crear_subtarea(request, evento_id):
             value={
                 'id': 15,
                 'nombre': 'Confirmar catering',
-                'plazo': '2026-10-12',
+                'plazo': '2026-10-31',
                 'horas_estimadas': '2.00',
                 'estado': 'pendiente',
             },
             response_only=True,
         ),
+        OpenApiExample(
+            'Conflicto por límite diario',
+            value={
+                'conflicto': True,
+                'mensaje': 'Quedarías con 12 horas planificadas (límite 10 horas).',
+                'horas_planificadas': 12,
+                'limite_horas': 10,
+                'fecha': '2026-10-31',
+            },
+            response_only=True,
+            status_codes=['409'],
+        ),
     ],
-    responses={200: SubtareaSerializer, 400: dict, 404: dict},
+    responses={
+        200: SubtareaSerializer,
+        400: dict,
+        404: dict,
+        409: dict,
+    },
 )
 @api_view(['GET', 'PUT', 'PATCH'])
 def actualizar_subtarea(request, subtarea_id):
@@ -417,14 +436,68 @@ def actualizar_subtarea(request, subtarea_id):
         partial=True,
     )
 
-    if serializer.is_valid():
-        serializer.save()
-        return Response(SubtareaSerializer(subtarea).data)
+    if not serializer.is_valid():
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    return Response(
-        serializer.errors,
-        status=status.HTTP_400_BAD_REQUEST,
-    )
+    # C3: comprobar sobrecarga cuando se cambia la fecha.
+    nueva_fecha = serializer.validated_data.get('plazo')
+
+    if nueva_fecha and nueva_fecha != subtarea.plazo:
+        configuracion, _ = ConfiguracionOrganizador.objects.get_or_create(
+            organizador=request.user,
+            defaults={'limite_horas_diarias': 6},
+        )
+
+        horas_del_dia = Subtarea.objects.filter(
+            evento__organizador=request.user,
+            plazo=nueva_fecha,
+        ).exclude(
+            id=subtarea.id,
+        ).aggregate(
+            total=models.Sum('horas_estimadas')
+        )['total'] or 0
+
+        horas_planificadas = horas_del_dia + subtarea.horas_estimadas
+        limite_horas = configuracion.limite_horas_diarias
+
+        if horas_planificadas > limite_horas:
+            fecha_sugerida = nueva_fecha + timedelta(days=1)
+
+            for _ in range(30):
+                horas_fecha_sugerida = Subtarea.objects.filter(
+                    evento__organizador=request.user,
+                    plazo=fecha_sugerida,
+                ).exclude(
+                    id=subtarea.id,
+                ).aggregate(
+                    total=models.Sum('horas_estimadas')
+                )['total'] or 0
+
+                if horas_fecha_sugerida + subtarea.horas_estimadas <= limite_horas:
+                    break
+
+                fecha_sugerida += timedelta(days=1)
+
+            return Response(
+                {
+                    'conflicto': True,
+                    'mensaje': (
+                        f'Quedarías con {horas_planificadas:g} horas '
+                        f'planificadas (límite {limite_horas} horas).'
+                    ),
+                    'horas_planificadas': horas_planificadas,
+                    'limite_horas': limite_horas,
+                    'fecha': nueva_fecha,
+                    'fecha_sugerida': fecha_sugerida,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+    serializer.save()
+        
+    return Response(SubtareaSerializer(subtarea).data)
 
 def _grupo_por_plazo(plazo, hoy):
     """Clasifica una gestión en vencidas / para_hoy / proximas según su plazo."""
@@ -576,3 +649,45 @@ def hoy(request):
         'para_hoy': para_hoy,
         'proximas': proximas,
     })
+
+@extend_schema(
+    summary='Consultar y actualizar límite diario de horas',
+    description=(
+        'Devuelve o actualiza el límite diario de horas de gestión del '
+        'organizador autenticado. Si aún no tiene configuración, se crea '
+        'automáticamente con un límite predeterminado de 6 horas.'
+    ),
+    request=ConfiguracionLimiteHorasSerializer,
+    responses={
+        200: ConfiguracionLimiteHorasSerializer,
+        400: dict,
+    },
+)
+
+@api_view(['GET', 'PUT'])
+def configuracion_limite_horas(request):
+    configuracion, _ = ConfiguracionOrganizador.objects.get_or_create(
+        organizador=request.user,
+        defaults={'limite_horas_diarias': 6},
+    )
+
+    if request.method == 'GET':
+        return Response(
+            ConfiguracionLimiteHorasSerializer(configuracion).data
+        )
+
+    serializer = ConfiguracionLimiteHorasSerializer(
+        configuracion,
+        data=request.data,
+    )
+
+    if serializer.is_valid():
+        serializer.save()
+        return Response(
+            ConfiguracionLimiteHorasSerializer(configuracion).data
+        )
+
+    return Response(
+        serializer.errors,
+        status=status.HTTP_400_BAD_REQUEST,
+    )

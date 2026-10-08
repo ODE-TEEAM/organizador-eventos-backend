@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
-from .models import Evento, Subtarea
+from .models import Evento, Subtarea, ConfiguracionOrganizador
 
 
 class RegistroSerializer(serializers.Serializer):
@@ -208,3 +208,15 @@ class HoyResponseSerializer(serializers.Serializer):
     vencidas = GestionHoySerializer(many=True)
     para_hoy = GestionHoySerializer(many=True)
     proximas = GestionHoySerializer(many=True)
+
+class ConfiguracionLimiteHorasSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ConfiguracionOrganizador
+        fields = ['limite_horas_diarias']
+
+    def validate_limite_horas_diarias(self, value):
+        if value < 1 or value > 16:
+            raise serializers.ValidationError(
+                'El límite diario debe estar entre 1 y 16 horas.'
+            )
+        return value
