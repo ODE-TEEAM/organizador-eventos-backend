@@ -592,64 +592,66 @@ def actualizar_subtarea(request, subtarea_id):
             serializer.errors,
             status=status.HTTP_400_BAD_REQUEST,
         )
-
-    # C3: comprobar sobrecarga cuando se cambia la fecha.
     
-    fecha_nueva = serializer.validated_data.get(
-        'plazo',
-        subtarea.plazo,
-    )
+    # C3: comprobar el límite únicamente si cambian la fecha o las horas.
+    fecha_nueva = serializer.validated_data.get('plazo', subtarea.plazo)
     horas_nuevas = serializer.validated_data.get(
         'horas_estimadas',
         subtarea.horas_estimadas,
     )
 
-    configuracion = _obtener_o_crear_perfil(request.user)
-
-    horas_existentes = _horas_asignadas_en_fecha(
-        request.user,
-        fecha_nueva,
-        excluir_id=subtarea.id,
+    cambia_planificacion = (
+        'plazo' in serializer.validated_data
+        or 'horas_estimadas' in serializer.validated_data
     )
 
-    horas_totales = horas_existentes + horas_nuevas
-    limite_horas = configuracion.limite_horas_diarias
+    if cambia_planificacion:
+        configuracion = _obtener_o_crear_perfil(request.user)
 
-    if horas_totales > limite_horas:
-        fecha_tope = subtarea.evento.fecha_hora.date()
-        fecha_sugerida = fecha_nueva + timedelta(days=1)
-
-        for _ in range(30):
-            if fecha_sugerida > fecha_tope:
-                fecha_sugerida = None
-                break
-
-            horas_fecha_sugerida = _horas_asignadas_en_fecha(
-                request.user,
-                fecha_sugerida,
-                excluir_id=subtarea.id,
-            )
-
-            if horas_fecha_sugerida + horas_nuevas <= limite_horas:
-                break
-
-            fecha_sugerida += timedelta(days=1)
-
-        return Response(
-            {
-                'conflicto': True,
-                'mensaje': (
-                    f'Quedarías con {horas_totales} horas planificadas '
-                    f'el {fecha_nueva}, pero tu límite es de '
-                    f'{limite_horas} horas.'
-                ),
-                'horas_planificadas': horas_totales,
-                'limite_horas': limite_horas,
-                'fecha': fecha_nueva,
-                'fecha_sugerida': fecha_sugerida,
-            },
-            status=status.HTTP_409_CONFLICT,
+        horas_existentes = _horas_asignadas_en_fecha(
+            request.user,
+            fecha_nueva,
+            excluir_id=subtarea.id,
         )
+
+        horas_totales = horas_existentes + horas_nuevas
+        limite_horas = configuracion.limite_horas_diarias
+
+        if horas_totales > limite_horas:
+            fecha_tope = subtarea.evento.fecha_hora.date()
+            fecha_sugerida = fecha_nueva + timedelta(days=1)
+
+            for _ in range(30):
+                if fecha_sugerida > fecha_tope:
+                    fecha_sugerida = None
+                    break
+
+                horas_fecha_sugerida = _horas_asignadas_en_fecha(
+                    request.user,
+                    fecha_sugerida,
+                    excluir_id=subtarea.id,
+                )
+
+                if horas_fecha_sugerida + horas_nuevas <= limite_horas:
+                    break
+
+                fecha_sugerida += timedelta(days=1)
+
+            return Response(
+                {
+                    'conflicto': True,
+                    'mensaje': (
+                        f'Quedarías con {horas_totales} horas planificadas '
+                        f'el {fecha_nueva}, pero tu límite es de '
+                        f'{limite_horas} horas.'
+                    ),
+                    'horas_planificadas': horas_totales,
+                    'limite_horas': limite_horas,
+                    'fecha': fecha_nueva,
+                    'fecha_sugerida': fecha_sugerida,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
     serializer.save()
     return Response(SubtareaSerializer(subtarea).data)
@@ -762,10 +764,13 @@ def hoy(request):
     # Conteo de completadas dentro del alcance del filtro de evento.
     completadas = queryset.filter(estado=ESTADO_COMPLETADA).count()
 
+        
     if estado_param:
         queryset = queryset.filter(estado=estado_param)
     else:
-        queryset = queryset.exclude(estado=ESTADO_COMPLETADA)
+        queryset = queryset.exclude(
+            estado__in=['completada', 'pospuesta']
+        )
 
     # Orden cronológico con desempate por menor esfuerzo estimado.
     queryset = queryset.order_by('plazo', 'horas_estimadas', 'id')

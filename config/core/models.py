@@ -20,7 +20,6 @@ class Evento(models.Model):
     def __str__(self):
         return self.nombre
 
-
 class Subtarea(models.Model):
     evento = models.ForeignKey(
         Evento,
@@ -31,6 +30,7 @@ class Subtarea(models.Model):
     plazo = models.DateField()
     horas_estimadas = models.PositiveSmallIntegerField()
     estado = models.CharField(max_length=20, default='pendiente')
+    nota = models.CharField(max_length=300, blank=True, default='')
 
     def __str__(self):
         return self.nombre
