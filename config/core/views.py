@@ -259,7 +259,7 @@ def perfil(request):
                 {'limite_horas_diarias': ['Debe ser un número entero entre 1 y 16.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         if limite < 1 or limite > 16:
             return Response(
                 {'limite_horas_diarias': ['El límite diario debe estar entre 1 y 16 horas.']},
@@ -321,6 +321,15 @@ def perfil(request):
             'limite_horas_diarias': perfil_org.limite_horas_diarias,
         })
 
+@extend_schema(
+    summary='Listar eventos o crear un evento',
+    request=EventoSerializer,
+    responses={
+        200: EventoSerializer(many=True),
+        201: EventoSerializer,
+        400: dict,
+    },
+)
 @api_view(['GET', 'POST'])
 def eventos(request):
     if request.method == 'GET':
@@ -328,7 +337,7 @@ def eventos(request):
         serializer = EventoSerializer(eventos, many=True)
         return Response(serializer.data)
 
-    
+
     if request.method == 'POST':
         serializer = EventoSerializer(data=request.data)
 
@@ -433,6 +442,68 @@ def obtener_evento(request, evento_id):
     )
 
 
+@extend_schema(
+    summary='Consultar el progreso de un evento',
+    description=(
+        'Devuelve el total de gestiones del evento, su distribución por estado '
+        'y el porcentaje completado. Solo permite consultar eventos del '
+        'organizador autenticado.'
+    ),
+    responses={
+        200: dict,
+        404: dict,
+    },
+    examples=[
+        OpenApiExample(
+            'Progreso del evento',
+            value={
+                'evento_id': 50,
+                'evento': 'Prueba de reactivación',
+                'total_gestiones': 3,
+                'completadas': 1,
+                'pendientes': 1,
+                'pospuestas': 1,
+                'porcentaje_progreso': 33.33,
+            },
+            response_only=True,
+            status_codes=['200'],
+        ),
+    ],
+)
+
+@api_view(['GET'])
+def progreso_evento(request, evento_id):
+    try:
+        evento = Evento.objects.get(
+            id=evento_id,
+            organizador=request.user,
+        )
+    except Evento.DoesNotExist:
+        return Response(
+            {'error': 'El evento no existe o no te pertenece.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    subtareas = evento.subtareas.all()
+    total = subtareas.count()
+
+    completadas = subtareas.filter(estado='completada').count()
+    pendientes = subtareas.filter(estado='pendiente').count()
+    pospuestas = subtareas.filter(estado='pospuesta').count()
+
+    porcentaje = round((completadas / total) * 100, 2) if total else 0
+
+    return Response({
+        'evento_id': evento.id,
+        'evento': evento.nombre,
+        'total_gestiones': total,
+        'completadas': completadas,
+        'pendientes': pendientes,
+        'pospuestas': pospuestas,
+        'porcentaje_progreso': porcentaje,
+    })
+
+
 @api_view(['POST'])
 def crear_subtarea(request, evento_id):
     try:
@@ -448,7 +519,7 @@ def crear_subtarea(request, evento_id):
         context={'evento': evento},
     )
 
-    
+
     if not serializer.is_valid():
         return Response(
             serializer.errors,
@@ -562,7 +633,7 @@ def actualizar_subtarea(request, subtarea_id):
     if request.method == 'GET':
         return Response(SubtareaSerializer(subtarea).data)
 
-    
+
     if request.method == 'DELETE':
         print(f"DELETE recibido para subtarea {subtarea.id}")
         subtarea.delete()
@@ -592,7 +663,35 @@ def actualizar_subtarea(request, subtarea_id):
             serializer.errors,
             status=status.HTTP_400_BAD_REQUEST,
         )
-    
+
+
+    # Reactivación de subtareas pospuestas.
+    estado_nuevo = serializer.validated_data.get(
+        'estado',
+        subtarea.estado,
+    )
+
+    if estado_nuevo == 'pendiente' and subtarea.estado == 'pospuesta':
+        fecha_reactivacion = serializer.validated_data.get(
+            'plazo',
+            subtarea.plazo,
+        )
+
+        if fecha_reactivacion < timezone.localdate():
+            return Response(
+                {'plazo': ['No puedes reactivar una gestión con una fecha pasada.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if fecha_reactivacion > subtarea.evento.plazo_limite:
+            return Response(
+                {'plazo': ['La fecha no puede superar el plazo límite del evento.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Al reactivar, limpiar la nota de aplazamiento.
+        serializer.validated_data['nota'] = ''
+
     # C3: comprobar el límite únicamente si cambian la fecha o las horas.
     fecha_nueva = serializer.validated_data.get('plazo', subtarea.plazo)
     horas_nuevas = serializer.validated_data.get(
@@ -764,7 +863,18 @@ def hoy(request):
     # Conteo de completadas dentro del alcance del filtro de evento.
     completadas = queryset.filter(estado=ESTADO_COMPLETADA).count()
 
-        
+        # Horas pendientes para la fecha de referencia.
+    horas_pendientes_hoy = (
+        queryset
+        .filter(
+            plazo=hoy_fecha,
+        )
+        .exclude(estado__in=['completada', 'pospuesta'])
+        .aggregate(total=models.Sum('horas_estimadas'))['total']
+        or 0
+    )
+
+
     if estado_param:
         queryset = queryset.filter(estado=estado_param)
     else:
@@ -804,6 +914,7 @@ def hoy(request):
             'para_hoy': len(para_hoy),
             'proximas': len(proximas),
             'completadas': completadas,
+            'horas_pendientes_hoy': horas_pendientes_hoy,
         },
         'gestiones': gestiones,
         'vencidas': vencidas,
@@ -876,4 +987,4 @@ def configuracion_limite_horas(request):
         serializer.errors,
         status=status.HTTP_400_BAD_REQUEST,
     )
-    
+

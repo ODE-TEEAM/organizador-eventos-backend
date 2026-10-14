@@ -101,6 +101,18 @@ class SubtareaSerializer(serializers.ModelSerializer):
             },
         }
 
+
+    def validate_estado(self, value):
+        estados_permitidos = ('pendiente', 'completada', 'pospuesta')
+
+        if value not in estados_permitidos:
+            raise serializers.ValidationError(
+                'El estado debe ser pendiente, completada o pospuesta.'
+            )
+
+        return value
+
+
     def validate_horas_estimadas(self, value):
         if value < HORAS_MINIMAS or value > HORAS_MAXIMAS:
             raise serializers.ValidationError(
@@ -255,6 +267,9 @@ class ResumenHoySerializer(serializers.Serializer):
     para_hoy = serializers.IntegerField()
     proximas = serializers.IntegerField()
     completadas = serializers.IntegerField(help_text='Gestiones completadas dentro del alcance del filtro.')
+    horas_pendientes_hoy = serializers.IntegerField(
+        help_text='Suma de horas estimadas de gestiones activas cuyo plazo es hoy.'
+    )
 
 
 class HoyResponseSerializer(serializers.Serializer):
