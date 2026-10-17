@@ -716,25 +716,12 @@ def actualizar_subtarea(request, subtarea_id):
         horas_totales = horas_existentes + horas_nuevas
         limite_horas = configuracion.limite_horas_diarias
 
+        
         if horas_totales > limite_horas:
-            fecha_tope = subtarea.evento.fecha_hora.date()
-            fecha_sugerida = fecha_nueva + timedelta(days=1)
-
-            for _ in range(30):
-                if fecha_sugerida > fecha_tope:
-                    fecha_sugerida = None
-                    break
-
-                horas_fecha_sugerida = _horas_asignadas_en_fecha(
-                    request.user,
-                    fecha_sugerida,
-                    excluir_id=subtarea.id,
-                )
-
-                if horas_fecha_sugerida + horas_nuevas <= limite_horas:
-                    break
-
-                fecha_sugerida += timedelta(days=1)
+            fechas_sugeridas = _buscar_fechas_disponibles(
+                request.user,
+                subtarea,
+            )
 
             return Response(
                 {
@@ -747,10 +734,16 @@ def actualizar_subtarea(request, subtarea_id):
                     'horas_planificadas': horas_totales,
                     'limite_horas': limite_horas,
                     'fecha': fecha_nueva,
-                    'fecha_sugerida': fecha_sugerida,
+                    'fechas_sugeridas': fechas_sugeridas,
+                    'fecha_sugerida': (
+                        fechas_sugeridas[0]['fecha']
+                        if fechas_sugeridas
+                        else None
+                    ),
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+
 
     serializer.save()
     return Response(SubtareaSerializer(subtarea).data)
@@ -763,6 +756,41 @@ def _grupo_por_plazo(plazo, hoy):
     if plazo == hoy:
         return 'para_hoy'
     return 'proximas'
+
+
+def _buscar_fechas_disponibles(usuario, subtarea, cantidad=3):
+    hoy = timezone.localdate()
+    configuracion = _obtener_o_crear_perfil(usuario)
+
+    horas_necesarias = subtarea.horas_estimadas
+    fechas_disponibles = []
+
+    # Buscar en los próximos 30 días.
+    for dias in range(1, 31):
+        fecha = hoy + timedelta(days=dias)
+
+        # No proponer fechas posteriores al límite del evento.
+        if fecha > subtarea.evento.plazo_limite:
+            break
+
+        horas_ocupadas = _horas_asignadas_en_fecha(usuario, fecha)
+
+        if (
+            horas_ocupadas + horas_necesarias
+            <= configuracion.limite_horas_diarias
+        ):
+            fechas_disponibles.append({
+                "fecha": fecha.isoformat(),
+                "horas_disponibles": (
+                    configuracion.limite_horas_diarias
+                    - horas_ocupadas
+                ),
+            })
+
+        if len(fechas_disponibles) >= cantidad:
+            break
+
+    return fechas_disponibles
 
 
 def _prioridad_por_plazo(plazo, hoy):
@@ -863,15 +891,28 @@ def hoy(request):
     # Conteo de completadas dentro del alcance del filtro de evento.
     completadas = queryset.filter(estado=ESTADO_COMPLETADA).count()
 
-        # Horas pendientes para la fecha de referencia.
+        
+    # Horas activas programadas para hoy.
+    # No cuentan las gestiones completadas ni las pospuestas.
     horas_pendientes_hoy = (
-        queryset
+        Subtarea.objects
         .filter(
+            evento__organizador=request.user,
             plazo=hoy_fecha,
         )
         .exclude(estado__in=['completada', 'pospuesta'])
         .aggregate(total=models.Sum('horas_estimadas'))['total']
         or 0
+    )
+
+    # Límite diario configurado para el organizador.
+    configuracion = _obtener_o_crear_perfil(request.user)
+    limite_horas_diarias = configuracion.limite_horas_diarias
+
+    # Calcular cuántas horas exceden el límite.
+    exceso_horas_hoy = max(
+        0,
+        horas_pendientes_hoy - limite_horas_diarias,
     )
 
 
@@ -906,8 +947,12 @@ def hoy(request):
         grupos[grupo].append(item)
         gestiones.append(item)
 
+    
     return Response({
         'fecha_referencia': hoy_fecha,
+        'limite_horas_diarias': limite_horas_diarias,
+        'requiere_reorganizacion': exceso_horas_hoy > 0,
+        'exceso_horas_hoy': exceso_horas_hoy,
         'resumen': {
             'total': len(vencidas) + len(para_hoy) + len(proximas),
             'vencidas': len(vencidas),
@@ -915,12 +960,15 @@ def hoy(request):
             'proximas': len(proximas),
             'completadas': completadas,
             'horas_pendientes_hoy': horas_pendientes_hoy,
+            'limite_horas_diarias': limite_horas_diarias,
+            'exceso_horas_hoy': exceso_horas_hoy,
         },
         'gestiones': gestiones,
         'vencidas': vencidas,
         'para_hoy': para_hoy,
         'proximas': proximas,
     })
+
 
 @extend_schema(
     summary='Consultar y actualizar límite diario de horas',
