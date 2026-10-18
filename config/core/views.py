@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import User
-from django.db import models, transaction
+from django.db import models
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 from rest_framework.authtoken.models import Token
@@ -386,6 +386,12 @@ def perfil(request):
 
 @extend_schema(
     summary='Listar eventos o crear un evento',
+    description=(
+        'GET lista los eventos del organizador autenticado. '
+        'POST crea solo el evento (sin gestiones automáticas). '
+        'Las gestiones logísticas se agregan después con '
+        'POST /api/eventos/{id}/subtareas/ o desde el formulario Crear.'
+    ),
     request=EventoSerializer,
     responses={
         200: EventoSerializer(many=True),
@@ -408,60 +414,10 @@ def eventos(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    fecha_gestiones = serializer.validated_data['plazo_limite']
-    horas_predeterminadas = 6
-
-    configuracion = _obtener_o_crear_perfil(request.user)
-
-    horas_existentes = _horas_asignadas_en_fecha(
-        request.user,
-        fecha_gestiones,
-    )
-
-    horas_totales = horas_existentes + horas_predeterminadas
-    fecha_formateada = fecha_gestiones.strftime('%d/%m/%Y')
-
-    if horas_totales > configuracion.limite_horas_diarias:
-        return Response(
-            {
-                'conflicto': True,
-                'mensaje': (
-                    f'No se puede crear el evento: sus tres gestiones '
-                    f'iniciales requieren {horas_predeterminadas} horas '
-                    f'el {fecha_formateada}. Ya hay {horas_existentes} '
-                    f'horas asignadas y el límite diario es de '
-                    f'{configuracion.limite_horas_diarias} horas.'
-                ),
-                'fecha': fecha_gestiones,
-                'horas_existentes': horas_existentes,
-                'horas_nuevas': horas_predeterminadas,
-                'horas_totales': horas_totales,
-                'limite_horas': configuracion.limite_horas_diarias,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    with transaction.atomic():
-        evento = serializer.save(organizador=request.user)
-
-        Subtarea.objects.create(
-            evento=evento,
-            nombre='Reservar salón',
-            plazo=evento.plazo_limite,
-            horas_estimadas=2,
-        )
-        Subtarea.objects.create(
-            evento=evento,
-            nombre='Enviar invitaciones',
-            plazo=evento.plazo_limite,
-            horas_estimadas=2,
-        )
-        Subtarea.objects.create(
-            evento=evento,
-            nombre='Confirmar catering',
-            plazo=evento.plazo_limite,
-            horas_estimadas=2,
-        )
+    # Solo crea el evento. No se insertan gestiones automáticas
+    # (Reservar salón, Enviar invitaciones, Confirmar catering).
+    # El organizador las agrega cuando quiera desde Crear o el detalle.
+    evento = serializer.save(organizador=request.user)
 
     return Response(
         EventoSerializer(evento).data,
