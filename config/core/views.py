@@ -18,7 +18,6 @@ from .models import Evento, Subtarea, PerfilOrganizador
 from .serializers import (
     EventoSerializer,
     SubtareaSerializer,
-    HoyQuerySerializer,
     HoyResponseSerializer,
     RegistroSerializer,
     ConfiguracionLimiteHorasSerializer,
@@ -27,6 +26,115 @@ from .serializers import (
 ESTADO_COMPLETADA = 'completada'
 # Ventana (en días) para clasificar una gestión próxima como de prioridad "media".
 VENTANA_MEDIA_DIAS = 3
+
+
+def _obtener_o_crear_perfil(user):
+    """Devuelve el perfil del organizador; si no existe, lo crea con límite 6h."""
+    perfil, _ = PerfilOrganizador.objects.get_or_create(
+        user=user,
+        defaults={'limite_horas_diarias': 6},
+    )
+    return perfil
+
+
+def _horas_asignadas_en_fecha(usuario, fecha, excluir_id=None):
+    """
+    Suma horas de gestiones ACTIVAS en una fecha.
+    No cuentan completadas ni pospuestas (mismo criterio que /hoy).
+    """
+    gestiones = Subtarea.objects.filter(
+        evento__organizador=usuario,
+        plazo=fecha,
+    ).exclude(
+        estado__in=['completada', 'pospuesta']
+    )
+
+    if excluir_id is not None:
+        gestiones = gestiones.exclude(id=excluir_id)
+
+    return (
+        gestiones.aggregate(total=models.Sum('horas_estimadas'))['total']
+        or 0
+    )
+
+
+def _buscar_dia_que_supera_limite(usuario, limite):
+    """
+    Busca el día (hoy o futuro) con más horas activas que el límite propuesto.
+    Si hay varios, devuelve el de mayor carga (y si empatan, el más cercano).
+    """
+    hoy = timezone.localdate()
+
+    filas = (
+        Subtarea.objects.filter(
+            evento__organizador=usuario,
+            plazo__gte=hoy,
+        )
+        .exclude(estado__in=['completada', 'pospuesta'])
+        .values('plazo')
+        .annotate(total=models.Sum('horas_estimadas'))
+        .filter(total__gt=limite)
+        .order_by('-total', 'plazo')
+    )
+
+    fila = filas.first()
+    if not fila:
+        return None
+
+    return {
+        'plazo': fila['plazo'],
+        'total': fila['total'],
+    }
+
+
+def _grupo_por_plazo(plazo, hoy):
+    """Clasifica una gestión en vencidas / para_hoy / proximas según su plazo."""
+    if plazo < hoy:
+        return 'vencidas'
+    if plazo == hoy:
+        return 'para_hoy'
+    return 'proximas'
+
+
+def _buscar_fechas_disponibles(usuario, subtarea, cantidad=3):
+    hoy = timezone.localdate()
+    configuracion = _obtener_o_crear_perfil(usuario)
+
+    horas_necesarias = subtarea.horas_estimadas
+    fechas_disponibles = []
+
+    for dias in range(1, 31):
+        fecha = hoy + timedelta(days=dias)
+
+        if fecha > subtarea.evento.plazo_limite:
+            break
+
+        horas_ocupadas = _horas_asignadas_en_fecha(usuario, fecha)
+
+        if (
+            horas_ocupadas + horas_necesarias
+            <= configuracion.limite_horas_diarias
+        ):
+            fechas_disponibles.append({
+                'fecha': fecha.isoformat(),
+                'horas_disponibles': (
+                    configuracion.limite_horas_diarias - horas_ocupadas
+                ),
+            })
+
+        if len(fechas_disponibles) >= cantidad:
+            break
+
+    return fechas_disponibles
+
+
+def _prioridad_por_plazo(plazo, hoy):
+    """Regla de priorización: vence hoy o antes -> alta; próximos 3 días -> media; resto -> baja."""
+    if plazo <= hoy:
+        return 'alta'
+    if plazo <= hoy + timedelta(days=VENTANA_MEDIA_DIAS):
+        return 'media'
+    return 'baja'
 
 
 @extend_schema(
@@ -38,8 +146,8 @@ VENTANA_MEDIA_DIAS = 3
 @permission_classes([AllowAny])
 def health_check(request):
     return Response({
-        "status": "ok",
-        "message": "API del Organizador de Eventos funcionando correctamente"
+        'status': 'ok',
+        'message': 'API del Organizador de Eventos funcionando correctamente',
     })
 
 
@@ -85,7 +193,7 @@ def login(request):
     if not email or not password:
         return Response(
             {'detail': 'Email y password son obligatorios.'},
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     user = User.objects.filter(email__iexact=email).first()
@@ -93,7 +201,7 @@ def login(request):
     if user is None or not user.is_active or not user.check_password(password):
         return Response(
             {'detail': 'Credenciales incorrectas.'},
-            status=status.HTTP_401_UNAUTHORIZED
+            status=status.HTTP_401_UNAUTHORIZED,
         )
 
     token, _ = Token.objects.get_or_create(user=user)
@@ -119,8 +227,7 @@ def login(request):
         'Recibe `nombre`, `email` y `password` (mínimo 6 caracteres) y crea la cuenta '
         'del organizador. El `nombre` se guarda como nombre visible (saludo y header). '
         'Devuelve `201` con los datos del usuario y su token. Si el correo ya existe o '
-        'los datos son inválidos, responde `400` con los errores por campo '
-        '(ej. `{"email": ["..."]}`).'
+        'los datos son inválidos, responde `400` con los errores por campo.'
     ),
     request=RegistroSerializer,
     examples=[
@@ -166,55 +273,9 @@ def register(request):
             'nombre': user.get_full_name() or user.username,
             'token': token.key,
         },
-        status=status.HTTP_201_CREATED
+        status=status.HTTP_201_CREATED,
     )
 
-
-@extend_schema(
-    summary='Leer o actualizar el perfil del organizador autenticado',
-    description=(
-        'GET devuelve `id`, `email` y `nombre` del usuario autenticado. '
-        'PATCH acepta `nombre` (mínimo 3 caracteres) y/o `password_actual` + '
-        '`password_nueva` (mínimo 6 caracteres) para cambiar la contraseña. '
-        'El token de sesión sigue siendo válido después del cambio.'
-    ),
-    request=dict,
-    responses={200: dict, 400: dict},
-)
-def _obtener_o_crear_perfil(user):
-    """Devuelve el perfil del organizador; si no existe, lo crea con límite 6h."""
-    perfil, _ = PerfilOrganizador.objects.get_or_create(
-        user=user,
-        defaults={'limite_horas_diarias': 6},
-    )
-    return perfil
-
-def _horas_asignadas_en_fecha(usuario, fecha, excluir_id=None):
-    gestiones = Subtarea.objects.filter(
-        evento__organizador=usuario,
-        plazo=fecha,
-    )
-
-    if excluir_id is not None:
-        gestiones = gestiones.exclude(id=excluir_id)
-
-    return (
-        gestiones.aggregate(total=models.Sum('horas_estimadas'))['total']
-        or 0
-    )
-
-def _buscar_dia_que_supera_limite(usuario, limite):
-    hoy = timezone.localdate()
-
-    total_hoy = _horas_asignadas_en_fecha(usuario, hoy)
-
-    if total_hoy > limite:
-        return {
-            'plazo': hoy,
-            'total': total_hoy,
-        }
-
-    return None
 
 @extend_schema(
     summary='Leer o actualizar el perfil del organizador autenticado',
@@ -246,7 +307,7 @@ def perfil(request):
         if len(nombre) < 3:
             return Response(
                 {'nombre': ['El nombre debe tener al menos 3 caracteres.']},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
         user.first_name = nombre[:150]
         user.save(update_fields=['first_name'])
@@ -257,30 +318,31 @@ def perfil(request):
         except (TypeError, ValueError):
             return Response(
                 {'limite_horas_diarias': ['Debe ser un número entero entre 1 y 16.']},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if limite < 1 or limite > 16:
             return Response(
                 {'limite_horas_diarias': ['El límite diario debe estar entre 1 y 16 horas.']},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-
-
-        dia_conflictivo = _buscar_dia_que_supera_limite(
-            request.user,
-            limite,
-        )
+        dia_conflictivo = _buscar_dia_que_supera_limite(request.user, limite)
 
         if dia_conflictivo:
+            fecha = dia_conflictivo['plazo']
+            fecha_txt = (
+                fecha.strftime('%d/%m/%Y')
+                if hasattr(fecha, 'strftime')
+                else str(fecha)
+            )
             return Response(
                 {
                     'limite_horas_diarias': [
                         (
                             f'No puedes establecer un límite de {limite} horas: '
-                            f'hoy ya tienes {dia_conflictivo["total"]} '
-                            f'horas asignadas.'
+                            f'el {fecha_txt} ya tienes {dia_conflictivo["total"]} '
+                            f'horas planificadas.'
                         )
                     ],
                     'fecha_conflicto': dia_conflictivo['plazo'],
@@ -293,33 +355,34 @@ def perfil(request):
         perfil_org.limite_horas_diarias = limite
         perfil_org.save(update_fields=['limite_horas_diarias'])
 
-        if 'password_actual' in data or 'password_nueva' in data:
-            password_actual = data.get('password_actual') or ''
-            password_nueva = data.get('password_nueva') or ''
+    if 'password_actual' in data or 'password_nueva' in data:
+        password_actual = data.get('password_actual') or ''
+        password_nueva = data.get('password_nueva') or ''
 
-            if not user.check_password(password_actual):
-                return Response(
-                    {'password_actual': ['La contraseña actual no es correcta.']},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        if not user.check_password(password_actual):
+            return Response(
+                {'password_actual': ['La contraseña actual no es correcta.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            if len(password_nueva) < 6:
-                return Response(
-                    {'password_nueva': ['La nueva contraseña debe tener al menos 6 caracteres.']},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        if len(password_nueva) < 6:
+            return Response(
+                {'password_nueva': ['La nueva contraseña debe tener al menos 6 caracteres.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            user.set_password(password_nueva)
-            user.save(update_fields=['password'])
+        user.set_password(password_nueva)
+        user.save(update_fields=['password'])
 
-        perfil_org.refresh_from_db()
+    perfil_org.refresh_from_db()
 
-        return Response({
-            'id': user.id,
-            'email': user.email,
-            'nombre': user.get_full_name() or user.username,
-            'limite_horas_diarias': perfil_org.limite_horas_diarias,
-        })
+    return Response({
+        'id': user.id,
+        'email': user.email,
+        'nombre': user.get_full_name() or user.username,
+        'limite_horas_diarias': perfil_org.limite_horas_diarias,
+    })
+
 
 @extend_schema(
     summary='Listar eventos o crear un evento',
@@ -333,81 +396,77 @@ def perfil(request):
 @api_view(['GET', 'POST'])
 def eventos(request):
     if request.method == 'GET':
-        eventos = Evento.objects.filter(organizador=request.user)
-        serializer = EventoSerializer(eventos, many=True)
+        eventos_qs = Evento.objects.filter(organizador=request.user)
+        serializer = EventoSerializer(eventos_qs, many=True)
         return Response(serializer.data)
 
+    serializer = EventoSerializer(data=request.data)
 
-    if request.method == 'POST':
-        serializer = EventoSerializer(data=request.data)
-
-        if not serializer.is_valid():
-            return Response(
-                serializer.errors,
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        fecha_gestiones = serializer.validated_data['plazo_limite']
-        horas_predeterminadas = 6
-
-        configuracion = _obtener_o_crear_perfil(request.user)
-
-        horas_existentes = _horas_asignadas_en_fecha(
-            request.user,
-            fecha_gestiones,
-        )
-
-        horas_totales = horas_existentes + horas_predeterminadas
-        fecha_formateada = fecha_gestiones.strftime('%d-%m-%Y')
-        if horas_totales > configuracion.limite_horas_diarias:
-            return Response(
-                {
-                    'conflicto': True,
-                    'mensaje': (
-                        f'No se puede crear el evento: sus tres gestiones '
-                        f'iniciales requieren {horas_predeterminadas} horas '
-                        f'el: {fecha_formateada}. Ya hay {horas_existentes} '
-                        f'horas asignadas y el límite diario es de '
-                        f'{configuracion.limite_horas_diarias} horas.'
-                    ),
-                    'fecha': fecha_gestiones,
-                    'horas_existentes': horas_existentes,
-                    'horas_nuevas': horas_predeterminadas,
-                    'horas_totales': horas_totales,
-                    'limite_horas': configuracion.limite_horas_diarias,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        with transaction.atomic():
-            evento = serializer.save(organizador=request.user)
-
-            Subtarea.objects.create(
-                evento=evento,
-                nombre='Reservar salón',
-                plazo=evento.plazo_limite,
-                horas_estimadas=2,
-            )
-
-            Subtarea.objects.create(
-                evento=evento,
-                nombre='Enviar invitaciones',
-                plazo=evento.plazo_limite,
-                horas_estimadas=2,
-            )
-
-            Subtarea.objects.create(
-                evento=evento,
-                nombre='Confirmar catering',
-                plazo=evento.plazo_limite,
-                horas_estimadas=2,
-            )
-
+    if not serializer.is_valid():
         return Response(
-            EventoSerializer(evento).data,
-            status=status.HTTP_201_CREATED,
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
+    fecha_gestiones = serializer.validated_data['plazo_limite']
+    horas_predeterminadas = 6
+
+    configuracion = _obtener_o_crear_perfil(request.user)
+
+    horas_existentes = _horas_asignadas_en_fecha(
+        request.user,
+        fecha_gestiones,
+    )
+
+    horas_totales = horas_existentes + horas_predeterminadas
+    fecha_formateada = fecha_gestiones.strftime('%d/%m/%Y')
+
+    if horas_totales > configuracion.limite_horas_diarias:
+        return Response(
+            {
+                'conflicto': True,
+                'mensaje': (
+                    f'No se puede crear el evento: sus tres gestiones '
+                    f'iniciales requieren {horas_predeterminadas} horas '
+                    f'el {fecha_formateada}. Ya hay {horas_existentes} '
+                    f'horas asignadas y el límite diario es de '
+                    f'{configuracion.limite_horas_diarias} horas.'
+                ),
+                'fecha': fecha_gestiones,
+                'horas_existentes': horas_existentes,
+                'horas_nuevas': horas_predeterminadas,
+                'horas_totales': horas_totales,
+                'limite_horas': configuracion.limite_horas_diarias,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        evento = serializer.save(organizador=request.user)
+
+        Subtarea.objects.create(
+            evento=evento,
+            nombre='Reservar salón',
+            plazo=evento.plazo_limite,
+            horas_estimadas=2,
+        )
+        Subtarea.objects.create(
+            evento=evento,
+            nombre='Enviar invitaciones',
+            plazo=evento.plazo_limite,
+            horas_estimadas=2,
+        )
+        Subtarea.objects.create(
+            evento=evento,
+            nombre='Confirmar catering',
+            plazo=evento.plazo_limite,
+            horas_estimadas=2,
+        )
+
+    return Response(
+        EventoSerializer(evento).data,
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
@@ -416,20 +475,17 @@ def obtener_evento(request, evento_id):
         evento = Evento.objects.get(id=evento_id, organizador=request.user)
     except Evento.DoesNotExist:
         return Response(
-            {"error": "El evento no existe"},
-            status=status.HTTP_404_NOT_FOUND
+            {'error': 'El evento no existe'},
+            status=status.HTTP_404_NOT_FOUND,
         )
 
     if request.method == 'GET':
-        serializer = EventoSerializer(evento)
-        return Response(serializer.data)
+        return Response(EventoSerializer(evento).data)
 
     if request.method == 'DELETE':
         evento.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-    # PUT/PATCH: edición del evento. `partial=True` permite enviar solo los
-    # campos que cambiaron; el serializer valida y devuelve errores por campo.
     serializer = EventoSerializer(evento, data=request.data, partial=True)
 
     if serializer.is_valid():
@@ -438,7 +494,7 @@ def obtener_evento(request, evento_id):
 
     return Response(
         serializer.errors,
-        status=status.HTTP_400_BAD_REQUEST
+        status=status.HTTP_400_BAD_REQUEST,
     )
 
 
@@ -449,10 +505,7 @@ def obtener_evento(request, evento_id):
         'y el porcentaje completado. Solo permite consultar eventos del '
         'organizador autenticado.'
     ),
-    responses={
-        200: dict,
-        404: dict,
-    },
+    responses={200: dict, 404: dict},
     examples=[
         OpenApiExample(
             'Progreso del evento',
@@ -470,7 +523,6 @@ def obtener_evento(request, evento_id):
         ),
     ],
 )
-
 @api_view(['GET'])
 def progreso_evento(request, evento_id):
     try:
@@ -510,15 +562,14 @@ def crear_subtarea(request, evento_id):
         evento = Evento.objects.get(id=evento_id, organizador=request.user)
     except Evento.DoesNotExist:
         return Response(
-            {"error": "El evento no existe"},
-            status=status.HTTP_404_NOT_FOUND
+            {'error': 'El evento no existe'},
+            status=status.HTTP_404_NOT_FOUND,
         )
 
     serializer = SubtareaSerializer(
         data=request.data,
         context={'evento': evento},
     )
-
 
     if not serializer.is_valid():
         return Response(
@@ -568,16 +619,12 @@ def crear_subtarea(request, evento_id):
     )
 
 
-
 @extend_schema(
     summary='Reprogramar o editar una gestión (subtarea)',
     description=(
         'Permite actualizar campos de una gestión del organizador autenticado. '
-        'Para el C1 del Sprint 3 el campo principal es `plazo` (reprogramar fecha). '
-        'También acepta `nombre`, `horas_estimadas` y `estado` de forma parcial.\n\n'
-        'Al reprogramar una gestión, se verifica el límite diario de horas del '
-        'organizador. Si la nueva fecha supera el límite configurado, se devuelve '
-        'un conflicto con las horas planificadas y el límite, sin guardar el cambio.'
+        'Al reprogramar, se verifica el límite diario de horas. Si se supera, '
+        'responde 409 con el conflicto y fechas sugeridas.'
     ),
     request=SubtareaSerializer,
     examples=[
@@ -585,17 +632,6 @@ def crear_subtarea(request, evento_id):
             'Reprogramar plazo',
             value={'plazo': '2026-10-31'},
             request_only=True,
-        ),
-        OpenApiExample(
-            'Respuesta',
-            value={
-                'id': 15,
-                'nombre': 'Confirmar catering',
-                'plazo': '2026-10-31',
-                'horas_estimadas': 2,
-                'estado': 'pendiente',
-            },
-            response_only=True,
         ),
         OpenApiExample(
             'Conflicto por límite diario',
@@ -633,19 +669,12 @@ def actualizar_subtarea(request, subtarea_id):
     if request.method == 'GET':
         return Response(SubtareaSerializer(subtarea).data)
 
-
     if request.method == 'DELETE':
-        print(f"DELETE recibido para subtarea {subtarea.id}")
         subtarea.delete()
-
-        existe = Subtarea.objects.filter(id=subtarea_id).exists()
-        print(f"¿Sigue existiendo la subtarea {subtarea_id}? {existe}")
-
         return Response(
             {
                 'mensaje': 'Gestión eliminada correctamente.',
                 'id_eliminado': subtarea_id,
-                'sigue_existiendo': existe,
             },
             status=status.HTTP_200_OK,
         )
@@ -657,19 +686,14 @@ def actualizar_subtarea(request, subtarea_id):
         context={'evento': subtarea.evento},
     )
 
-
     if not serializer.is_valid():
         return Response(
             serializer.errors,
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-
     # Reactivación de subtareas pospuestas.
-    estado_nuevo = serializer.validated_data.get(
-        'estado',
-        subtarea.estado,
-    )
+    estado_nuevo = serializer.validated_data.get('estado', subtarea.estado)
 
     if estado_nuevo == 'pendiente' and subtarea.estado == 'pospuesta':
         fecha_reactivacion = serializer.validated_data.get(
@@ -689,10 +713,9 @@ def actualizar_subtarea(request, subtarea_id):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Al reactivar, limpiar la nota de aplazamiento.
         serializer.validated_data['nota'] = ''
 
-    # C3: comprobar el límite únicamente si cambian la fecha o las horas.
+    # Comprobar límite solo si cambian fecha u horas.
     fecha_nueva = serializer.validated_data.get('plazo', subtarea.plazo)
     horas_nuevas = serializer.validated_data.get(
         'horas_estimadas',
@@ -716,7 +739,6 @@ def actualizar_subtarea(request, subtarea_id):
         horas_totales = horas_existentes + horas_nuevas
         limite_horas = configuracion.limite_horas_diarias
 
-        
         if horas_totales > limite_horas:
             fechas_sugeridas = _buscar_fechas_disponibles(
                 request.user,
@@ -744,128 +766,28 @@ def actualizar_subtarea(request, subtarea_id):
                 status=status.HTTP_409_CONFLICT,
             )
 
-
     serializer.save()
     return Response(SubtareaSerializer(subtarea).data)
-
-
-def _grupo_por_plazo(plazo, hoy):
-    """Clasifica una gestión en vencidas / para_hoy / proximas según su plazo."""
-    if plazo < hoy:
-        return 'vencidas'
-    if plazo == hoy:
-        return 'para_hoy'
-    return 'proximas'
-
-
-def _buscar_fechas_disponibles(usuario, subtarea, cantidad=3):
-    hoy = timezone.localdate()
-    configuracion = _obtener_o_crear_perfil(usuario)
-
-    horas_necesarias = subtarea.horas_estimadas
-    fechas_disponibles = []
-
-    # Buscar en los próximos 30 días.
-    for dias in range(1, 31):
-        fecha = hoy + timedelta(days=dias)
-
-        # No proponer fechas posteriores al límite del evento.
-        if fecha > subtarea.evento.plazo_limite:
-            break
-
-        horas_ocupadas = _horas_asignadas_en_fecha(usuario, fecha)
-
-        if (
-            horas_ocupadas + horas_necesarias
-            <= configuracion.limite_horas_diarias
-        ):
-            fechas_disponibles.append({
-                "fecha": fecha.isoformat(),
-                "horas_disponibles": (
-                    configuracion.limite_horas_diarias
-                    - horas_ocupadas
-                ),
-            })
-
-        if len(fechas_disponibles) >= cantidad:
-            break
-
-    return fechas_disponibles
-
-
-def _prioridad_por_plazo(plazo, hoy):
-    """Regla de priorización: vence hoy o antes -> alta; próximos 3 días -> media; resto -> baja."""
-    if plazo <= hoy:
-        return 'alta'
-    if plazo <= hoy + timedelta(days=VENTANA_MEDIA_DIAS):
-        return 'media'
-    return 'baja'
 
 
 @extend_schema(
     summary='Gestiones urgentes agrupadas para la vista /hoy',
     description=(
-        'Devuelve las gestiones (subtareas) del organizador agrupadas por urgencia en '
-        '`vencidas`, `para_hoy` y `proximas`, junto con un `resumen` de conteos.\n\n'
-        '**Regla de orden:** cada grupo se ordena por `fecha` (plazo) ascendente y, '
-        'ante empate, por menor esfuerzo estimado (`horas_estimadas`).\n\n'
-        '**Regla de prioridad:** `alta` si vence hoy o antes, `media` si vence dentro '
-        'de los próximos 3 días, `baja` en el resto.\n\n'
-        '**Filtros (query params):** `?evento=<id>` limita a un evento y '
-        '`?estado=<pendiente|en_progreso|completada>` limita a un estado. Sin filtro de '
-        'estado solo se listan gestiones activas (se excluyen las completadas).'
+        'Devuelve las gestiones del organizador agrupadas por urgencia en '
+        '`vencidas`, `para_hoy` y `proximas`, con resumen de conteos y '
+        'señales de reorganización si el día actual supera el límite de horas.'
     ),
     parameters=[
         OpenApiParameter(
             'evento', int, required=False,
-            description='Filtra por el id del evento (ej. ?evento=3).'
+            description='Filtra por el id del evento (ej. ?evento=3).',
         ),
         OpenApiParameter(
             'estado', str, required=False,
-            description='Filtra por estado: pendiente, en_progreso o completada.'
+            description='Filtra por estado: pendiente, en_progreso o completada.',
         ),
     ],
     responses=HoyResponseSerializer,
-    examples=[
-        OpenApiExample(
-            'Respuesta agrupada',
-            value={
-                'fecha_referencia': '2026-09-16',
-                'resumen': {
-                    'total': 4, 'vencidas': 1, 'para_hoy': 2,
-                    'proximas': 1, 'completadas': 1
-                },
-                'vencidas': [
-                    {
-                        'id': 1, 'titulo': 'Confirmar menú con catering',
-                        'evento': 'Boda de Laura & Carlos', 'evento_id': 3,
-                        'estado': 'pendiente', 'prioridad': 'alta',
-                        'fecha': '2026-09-14', 'horas_estimadas': '2.00',
-                        'grupo': 'vencidas'
-                    }
-                ],
-                'para_hoy': [
-                    {
-                        'id': 4, 'titulo': 'Solicitar cotización de sonido',
-                        'evento': 'Boda de Laura & Carlos', 'evento_id': 3,
-                        'estado': 'pendiente', 'prioridad': 'alta',
-                        'fecha': '2026-09-16', 'horas_estimadas': '3.00',
-                        'grupo': 'para_hoy'
-                    }
-                ],
-                'proximas': [
-                    {
-                        'id': 6, 'titulo': 'Diseñar programa del evento',
-                        'evento': 'Evento Corporativo Nexo', 'evento_id': 5,
-                        'estado': 'pendiente', 'prioridad': 'media',
-                        'fecha': '2026-09-18', 'horas_estimadas': '4.00',
-                        'grupo': 'proximas'
-                    }
-                ],
-            },
-            response_only=True,
-        ),
-    ],
 )
 @api_view(['GET'])
 def hoy(request):
@@ -882,18 +804,14 @@ def hoy(request):
         except (TypeError, ValueError):
             return Response(
                 {'error': "El parámetro 'evento' debe ser un número entero."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
         queryset = queryset.filter(evento_id=evento_id)
 
     estado_param = request.query_params.get('estado')
 
-    # Conteo de completadas dentro del alcance del filtro de evento.
     completadas = queryset.filter(estado=ESTADO_COMPLETADA).count()
 
-        
-    # Horas activas programadas para hoy.
-    # No cuentan las gestiones completadas ni las pospuestas.
     horas_pendientes_hoy = (
         Subtarea.objects
         .filter(
@@ -905,16 +823,10 @@ def hoy(request):
         or 0
     )
 
-    # Límite diario configurado para el organizador.
     configuracion = _obtener_o_crear_perfil(request.user)
     limite_horas_diarias = configuracion.limite_horas_diarias
 
-    # Calcular cuántas horas exceden el límite.
-    exceso_horas_hoy = max(
-        0,
-        horas_pendientes_hoy - limite_horas_diarias,
-    )
-
+    exceso_horas_hoy = max(0, horas_pendientes_hoy - limite_horas_diarias)
 
     if estado_param:
         queryset = queryset.filter(estado=estado_param)
@@ -923,12 +835,10 @@ def hoy(request):
             estado__in=['completada', 'pospuesta']
         )
 
-    # Orden cronológico con desempate por menor esfuerzo estimado.
     queryset = queryset.order_by('plazo', 'horas_estimadas', 'id')
 
     vencidas, para_hoy, proximas = [], [], []
     grupos = {'vencidas': vencidas, 'para_hoy': para_hoy, 'proximas': proximas}
-    # Lista plana (ya ordenada) que consume el frontend en /hoy.
     gestiones = []
 
     for subtarea in queryset:
@@ -947,7 +857,6 @@ def hoy(request):
         grupos[grupo].append(item)
         gestiones.append(item)
 
-    
     return Response({
         'fecha_referencia': hoy_fecha,
         'limite_horas_diarias': limite_horas_diarias,
@@ -975,7 +884,9 @@ def hoy(request):
     description=(
         'Devuelve o actualiza el límite diario de horas de gestión del '
         'organizador autenticado. Si aún no tiene configuración, se crea '
-        'automáticamente con un límite predeterminado de 6 horas.'
+        'automáticamente con un límite predeterminado de 6 horas. '
+        'Al actualizar, se valida que ningún día (hoy o futuro) con gestiones '
+        'activas supere el nuevo límite.'
     ),
     request=ConfiguracionLimiteHorasSerializer,
     responses={
@@ -983,7 +894,6 @@ def hoy(request):
         400: dict,
     },
 )
-
 @api_view(['GET', 'PUT'])
 def configuracion_limite_horas(request):
     configuracion, _ = PerfilOrganizador.objects.get_or_create(
@@ -1010,13 +920,19 @@ def configuracion_limite_horas(request):
         )
 
         if dia_conflictivo:
+            fecha = dia_conflictivo['plazo']
+            fecha_txt = (
+                fecha.strftime('%d/%m/%Y')
+                if hasattr(fecha, 'strftime')
+                else str(fecha)
+            )
             return Response(
                 {
                     'limite_horas_diarias': [
                         (
                             f'No puedes establecer un límite de {limite} horas: '
-                            f'hoy ya tienes {dia_conflictivo["total"]} '
-                            f'horas asignadas.'
+                            f'el {fecha_txt} ya tienes {dia_conflictivo["total"]} '
+                            f'horas planificadas.'
                         )
                     ],
                     'fecha_conflicto': dia_conflictivo['plazo'],
@@ -1035,4 +951,3 @@ def configuracion_limite_horas(request):
         serializer.errors,
         status=status.HTTP_400_BAD_REQUEST,
     )
-
