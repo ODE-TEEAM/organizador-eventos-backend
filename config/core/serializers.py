@@ -7,11 +7,9 @@ from .models import Evento, Subtarea, PerfilOrganizador
 ANIO_MAXIMO = 2100
 # Rango permitido de horas estimadas por gestión.
 HORAS_MINIMAS = 1
-# Topes ampliados tras las pruebas de usuario (Sprint 5): un día puede tener
-# hasta 24 h y una gestión puede ocupar hasta 24 h (sin pasar el límite diario,
-# que se valida aparte al crear o mover la gestión).
-HORAS_MAXIMAS = 24
-LIMITE_DIARIO_MAXIMO = 24
+HORAS_MAXIMAS = 12
+# Límite diario personalizado del organizador: máximo 16 h (regla del Sprint 3).
+LIMITE_DIARIO_MAXIMO = 16
 
 
 class RegistroSerializer(serializers.Serializer):

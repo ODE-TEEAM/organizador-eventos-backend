@@ -282,7 +282,7 @@ def register(request):
     summary='Leer o actualizar el perfil del organizador autenticado',
     description=(
         'GET devuelve `id`, `email`, `nombre` y `limite_horas_diarias` (default 6). '
-        'PATCH acepta `nombre`, `limite_horas_diarias` (1–24) y/o cambio de contraseña '
+        'PATCH acepta `nombre`, `limite_horas_diarias` (1–16) y/o cambio de contraseña '
         '(`password_actual` + `password_nueva`).'
     ),
     request=dict,
