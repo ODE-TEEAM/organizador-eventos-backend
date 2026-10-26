@@ -21,6 +21,7 @@ from .serializers import (
     HoyResponseSerializer,
     RegistroSerializer,
     ConfiguracionLimiteHorasSerializer,
+    LIMITE_DIARIO_MAXIMO,
 )
 
 ESTADO_COMPLETADA = 'completada'
@@ -281,7 +282,7 @@ def register(request):
     summary='Leer o actualizar el perfil del organizador autenticado',
     description=(
         'GET devuelve `id`, `email`, `nombre` y `limite_horas_diarias` (default 6). '
-        'PATCH acepta `nombre`, `limite_horas_diarias` (1–16) y/o cambio de contraseña '
+        'PATCH acepta `nombre`, `limite_horas_diarias` (1–24) y/o cambio de contraseña '
         '(`password_actual` + `password_nueva`).'
     ),
     request=dict,
@@ -317,13 +318,13 @@ def perfil(request):
             limite = int(data.get('limite_horas_diarias'))
         except (TypeError, ValueError):
             return Response(
-                {'limite_horas_diarias': ['Debe ser un número entero entre 1 y 16.']},
+                {'limite_horas_diarias': [f'Debe ser un número entero entre 1 y {LIMITE_DIARIO_MAXIMO}.']},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if limite < 1 or limite > 16:
+        if limite < 1 or limite > LIMITE_DIARIO_MAXIMO:
             return Response(
-                {'limite_horas_diarias': ['El límite diario debe estar entre 1 y 16 horas.']},
+                {'limite_horas_diarias': [f'El límite diario debe estar entre 1 y {LIMITE_DIARIO_MAXIMO} horas.']},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

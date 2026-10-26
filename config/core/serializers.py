@@ -7,7 +7,11 @@ from .models import Evento, Subtarea, PerfilOrganizador
 ANIO_MAXIMO = 2100
 # Rango permitido de horas estimadas por gestión.
 HORAS_MINIMAS = 1
-HORAS_MAXIMAS = 12
+# Topes ampliados tras las pruebas de usuario (Sprint 5): un día puede tener
+# hasta 24 h y una gestión puede ocupar hasta 24 h (sin pasar el límite diario,
+# que se valida aparte al crear o mover la gestión).
+HORAS_MAXIMAS = 24
+LIMITE_DIARIO_MAXIMO = 24
 
 
 class RegistroSerializer(serializers.Serializer):
@@ -290,8 +294,8 @@ class ConfiguracionLimiteHorasSerializer(serializers.ModelSerializer):
         fields = ['limite_horas_diarias']
 
     def validate_limite_horas_diarias(self, value):
-        if value < 1 or value > 16:
+        if value < 1 or value > LIMITE_DIARIO_MAXIMO:
             raise serializers.ValidationError(
-                'El límite diario debe estar entre 1 y 16 horas.'
+                f'El límite diario debe estar entre 1 y {LIMITE_DIARIO_MAXIMO} horas.'
             )
         return value
